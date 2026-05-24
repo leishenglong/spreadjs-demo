@@ -153,11 +153,17 @@ export const useDataStore = defineStore('data', () => {
   }
 
   async function deleteWorkflow(id) {
-    console.log('deleteWorkflow called, id:', id, typeof id)
+    // 删除关联的任务
+    const relatedTasks = tasks.value.filter(t => t.workflowId === id)
+    for (const task of relatedTasks) {
+      await dbOperation.delete(STORES.TASKS, task.id)
+    }
+    // 从 store 中移除关联任务
+    tasks.value = tasks.value.filter(t => t.workflowId !== id)
+
+    // 删除工作流
     await dbOperation.delete(STORES.WORKFLOWS, id)
-    console.log('delete from IndexedDB completed')
     const index = workflows.value.findIndex(w => w.id === id)
-    console.log('found index:', index)
     if (index !== -1) {
       workflows.value.splice(index, 1)
       return true
@@ -214,6 +220,288 @@ export const useDataStore = defineStore('data', () => {
     return workflows.value.find(w => w.templateId === templateId)
   }
 
+  // 创建工作流任务（仅创建第一步的任务）
+  async function createTasksForWorkflow(workflow, template) {
+    // 动态导入 authStore 以避免循环依赖
+    const { useAuthStore } = await import('@/stores/auth')
+    const authStore = useAuthStore()
+
+    const firstStep = workflow.steps[0]
+    if (!firstStep) return []
+
+    let assigneeIds = []
+
+    if (firstStep.assigneeType === 'department' && firstStep.assignees) {
+      // 部门类型：只分配给员工角色的用户
+      assigneeIds = authStore.users
+        .filter(u => u.department === firstStep.assignees && u.role === 'employee')
+        .map(u => u.id)
+    } else if (firstStep.assigneeType === 'role' && firstStep.assignees) {
+      // 角色类型：分配给指定角色的所有用户
+      assigneeIds = authStore.users
+        .filter(u => u.role === firstStep.assignees)
+        .map(u => u.id)
+    } else if (firstStep.assigneeType === 'users' && firstStep.assigneeIds?.length) {
+      // 指定用户类型
+      assigneeIds = firstStep.assigneeIds
+    }
+
+    const createdTasks = []
+    for (const assigneeId of assigneeIds) {
+      const assignee = authStore.getUserById(assigneeId)
+      const task = {
+        workflowId: workflow.id,
+        workflowName: workflow.name,
+        templateId: template.id,
+        templateName: template.name,
+        title: template.title || template.name,
+        status: 'pending',
+        currentStep: firstStep.id,
+        currentStepName: firstStep.name,
+        assigneeId: assignee.id,
+        assigneeName: assignee.name,
+        department: assignee.department,
+        createdBy: assignee.username,
+        createdAt: new Date().toISOString().split('T')[0],
+        dueDate: null,
+        data: {},
+        ssjson: null,
+        history: []
+      }
+      const savedTask = await addTask(task)
+      createdTasks.push(savedTask)
+    }
+
+    return createdTasks
+  }
+
+  // 提交任务并推进到下一步
+  async function submitTaskAndAdvance(taskId, formData, ssjson) {
+    const { useAuthStore } = await import('@/stores/auth')
+    const authStore = useAuthStore()
+
+    const currentTask = tasks.value.find(t => t.id === taskId)
+    if (!currentTask) return null
+
+    const workflow = workflows.value.find(w => w.id === currentTask.workflowId)
+    if (!workflow) return null
+
+    const steps = workflow.steps || []
+    const currentStepIndex = steps.findIndex(s => s.id === currentTask.currentStep)
+    const nextStep = steps[currentStepIndex + 1]
+
+    if (nextStep) {
+      // 有下一步，为下一步创建新任务
+      let assigneeIds = []
+
+      if (nextStep.assigneeType === 'role' && nextStep.assignees) {
+        assigneeIds = authStore.users
+          .filter(u => u.role === nextStep.assignees)
+          .map(u => u.id)
+      } else if (nextStep.assigneeType === 'department' && nextStep.assignees) {
+        // 审批步骤分配给 manager 角色
+        assigneeIds = authStore.users
+          .filter(u => u.department === nextStep.assignees && u.role === 'manager')
+          .map(u => u.id)
+      } else if (nextStep.assigneeType === 'users' && nextStep.assigneeIds?.length) {
+        assigneeIds = nextStep.assigneeIds
+      }
+
+      for (const assigneeId of assigneeIds) {
+        const assignee = authStore.getUserById(assigneeId)
+        const newTask = {
+          workflowId: workflow.id,
+          workflowName: workflow.name,
+          templateId: currentTask.templateId,
+          templateName: currentTask.templateName,
+          title: `${workflow.name} - ${nextStep.name}`,
+          status: 'pending',
+          currentStep: nextStep.id,
+          currentStepName: nextStep.name,
+          assigneeId: assignee.id,
+          assigneeName: assignee.name,
+          department: assignee.department,
+          createdBy: authStore.user?.name || '',
+          createdAt: new Date().toISOString().split('T')[0],
+          dueDate: '',
+          data: formData,
+          ssjson: ssjson,
+          history: []
+        }
+        await addTask(newTask)
+      }
+
+      // 更新当前任务为已完成
+      await updateTask(currentTask.id, {
+        status: 'completed',
+        ssjson: ssjson,
+        data: formData,
+        history: [
+          ...(currentTask.history || []),
+          {
+            step: currentTask.currentStepName,
+            operator: authStore.user?.name || '',
+            action: '提交',
+            time: new Date().toLocaleString()
+          }
+        ]
+      })
+    } else {
+      // 所有步骤完成
+      await updateTask(currentTask.id, {
+        status: 'completed',
+        ssjson: ssjson,
+        data: formData,
+        history: [
+          ...(currentTask.history || []),
+          {
+            step: currentTask.currentStepName,
+            operator: authStore.user?.name || '',
+            action: '提交',
+            time: new Date().toLocaleString()
+          }
+        ]
+      })
+    }
+
+    return currentTask
+  }
+
+  // 审批通过并推进到下一步
+  async function approveTask(taskId, comment = '') {
+    const { useAuthStore } = await import('@/stores/auth')
+    const authStore = useAuthStore()
+
+    const currentTask = tasks.value.find(t => t.id === taskId)
+    if (!currentTask) return null
+
+    const workflow = workflows.value.find(w => w.id === currentTask.workflowId)
+    if (!workflow) return null
+
+    const steps = workflow.steps || []
+    const currentStepIndex = steps.findIndex(s => s.id === currentTask.currentStep)
+    const nextStep = steps[currentStepIndex + 1]
+
+    if (nextStep) {
+      // 有下一步，为下一步创建新任务
+      let assigneeIds = []
+
+      if (nextStep.assigneeType === 'role' && nextStep.assignees) {
+        assigneeIds = authStore.users
+          .filter(u => u.role === nextStep.assignees)
+          .map(u => u.id)
+      } else if (nextStep.assigneeType === 'department' && nextStep.assignees) {
+        assigneeIds = authStore.users
+          .filter(u => u.department === nextStep.assignees && u.role === 'manager')
+          .map(u => u.id)
+      } else if (nextStep.assigneeType === 'users' && nextStep.assigneeIds?.length) {
+        assigneeIds = nextStep.assigneeIds
+      }
+
+      for (const assigneeId of assigneeIds) {
+        const assignee = authStore.getUserById(assigneeId)
+        const newTask = {
+          workflowId: workflow.id,
+          workflowName: workflow.name,
+          templateId: currentTask.templateId,
+          templateName: currentTask.templateName,
+          title: `${workflow.name} - ${nextStep.name}`,
+          status: 'pending',
+          currentStep: nextStep.id,
+          currentStepName: nextStep.name,
+          assigneeId: assignee.id,
+          assigneeName: assignee.name,
+          department: assignee.department,
+          createdBy: currentTask.createdBy,
+          createdAt: new Date().toISOString().split('T')[0],
+          dueDate: '',
+          data: currentTask.data,
+          ssjson: currentTask.ssjson,
+          history: []
+        }
+        await addTask(newTask)
+      }
+
+      await updateTask(currentTask.id, {
+        status: 'completed',
+        history: [
+          ...(currentTask.history || []),
+          {
+            step: currentTask.currentStepName,
+            operator: authStore.user?.name || '',
+            action: '通过',
+            time: new Date().toLocaleString(),
+            comment: comment
+          }
+        ]
+      })
+    } else {
+      // 所有步骤完成
+      await updateTask(currentTask.id, {
+        status: 'completed',
+        history: [
+          ...(currentTask.history || []),
+          {
+            step: currentTask.currentStepName,
+            operator: authStore.user?.name || '',
+            action: '通过',
+            time: new Date().toLocaleString(),
+            comment: comment
+          }
+        ]
+      })
+    }
+
+    return currentTask
+  }
+
+  // 驳回任务
+  async function rejectTask(taskId, comment = '') {
+    const { useAuthStore } = await import('@/stores/auth')
+    const authStore = useAuthStore()
+
+    const currentTask = tasks.value.find(t => t.id === taskId)
+    if (!currentTask) return null
+
+    await updateTask(currentTask.id, {
+      status: 'rejected',
+      history: [
+        ...(currentTask.history || []),
+        {
+          step: currentTask.currentStepName,
+          operator: authStore.user?.name || '',
+          action: '驳回',
+          time: new Date().toLocaleString(),
+          comment: comment
+        }
+      ]
+    })
+
+    return currentTask
+  }
+
+  // 更新任务状态
+  async function updateTaskStatus(taskId, status, action = '') {
+    const currentTask = tasks.value.find(t => t.id === taskId)
+    if (!currentTask) return null
+
+    const historyEntry = action ? {
+      step: currentTask.currentStepName,
+      operator: '',
+      action: action,
+      time: new Date().toLocaleString()
+    } : null
+
+    await updateTask(currentTask.id, {
+      status: status,
+      history: historyEntry
+        ? [...(currentTask.history || []), historyEntry]
+        : currentTask.history
+    })
+
+    return currentTask
+  }
+
   return {
     // 状态
     templates,
@@ -234,6 +522,11 @@ export const useDataStore = defineStore('data', () => {
     getWorkflowById,
     deleteWorkflow,
     getWorkflowByTemplate,
+    createTasksForWorkflow,
+    submitTaskAndAdvance,
+    approveTask,
+    rejectTask,
+    updateTaskStatus,
     // 任务
     addTask,
     updateTask,

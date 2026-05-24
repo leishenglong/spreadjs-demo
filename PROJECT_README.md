@@ -236,3 +236,44 @@ const tasks = await dbOperation.getAll(STORES.TASKS)
 - [SpreadJS 中文文档](https://demo.grapecity.com.cn/spreadjs/help/)
 - [Vue 3 官方文档](https://cn.vuejs.org/)
 - [IndexedDB API](https://developer.mozilla.org/zh-CN/docs/Web/API/IndexedDB_API)
+
+---
+
+## 测试
+
+```bash
+# 运行所有测试
+npm test
+
+# 监听模式（开发时）
+npm run test:watch
+```
+
+### 测试覆盖的行为
+
+**createTasksForWorkflow**: 工作流任务创建
+- 部门分配时只分配给 employee 角色用户
+- 只创建第一步的任务（不创建所有步骤任务）
+- 角色分配模式正确筛选用户
+- 指定用户分配模式正确筛选用户
+
+**submitTaskAndAdvance**: 填报提交推进
+- 提交后创建下一步审批任务
+- 审批步骤分配给 manager 角色
+- 最后一步提交不创建新任务
+
+**approveTask**: 审批通过推进
+- 审批通过后创建下一步任务
+- 最后一步审批标记为已完成
+
+**rejectTask**: 审批驳回
+- 驳回后任务状态变为 rejected
+- 记录驳回历史
+
+**deleteWorkflow**: 工作流删除
+- 删除工作流时同时删除关联任务
+- 不影响其他工作流的任务
+
+**updateTaskStatus**: 任务状态更新
+- 支持更新任务状态
+- 可记录状态变更历史
