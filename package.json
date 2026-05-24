@@ -1,0 +1,35 @@
+{
+  "name": "vue3-spreadjs-designer",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@grapecity-software/spread-sheets": "19.0.3",
+    "@grapecity-software/spread-sheets-barcode": "19.0.3",
+    "@grapecity-software/spread-sheets-charts": "19.0.3",
+    "@grapecity-software/spread-sheets-designer": "19.0.3",
+    "@grapecity-software/spread-sheets-designer-resources-cn": "19.0.3",
+    "@grapecity-software/spread-sheets-formula-panel": "19.0.3",
+    "@grapecity-software/spread-sheets-io": "19.0.3",
+    "@grapecity-software/spread-sheets-languagepackages": "19.0.3",
+    "@grapecity-software/spread-sheets-pdf": "19.0.3",
+    "@grapecity-software/spread-sheets-pivot-addon": "19.0.3",
+    "@grapecity-software/spread-sheets-print": "19.0.3",
+    "@grapecity-software/spread-sheets-reportsheet-addon": "19.0.3",
+    "@grapecity-software/spread-sheets-resources-zh": "19.0.3",
+    "@grapecity-software/spread-sheets-shapes": "19.0.3",
+    "@grapecity-software/spread-sheets-slicers": "19.0.3",
+    "@grapecity-software/spread-sheets-tablesheet": "19.0.3",
+    "pinia": "^3.0.4",
+    "vue": "^3.5.13",
+    "vue-router": "^4.6.4"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^6.0.11"
+  }
+}
